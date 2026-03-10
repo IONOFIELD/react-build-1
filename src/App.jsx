@@ -1380,6 +1380,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord }) {
   const filename = record?.filename || "REACT-BL-A7F3-20260308-001.edf";
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showPatternTable, setShowPatternTable] = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(true);
 
   // Auto-verify pending records when opened for review
   useEffect(() => {
@@ -1446,7 +1447,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord }) {
           <button onClick={(e)=>{e.stopPropagation();setShowPatternTable(true);}} style={controlBtn(showPatternTable)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.List()} Pattern Table</span>
           </button>
-          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(prev => !prev);}} style={controlBtn(eeg.showAnnotationPanel)}>
+          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotations(prev => !prev);}} style={controlBtn(eeg.showAnnotations)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Bookmark()} Annotations ({eeg.annotations.length})</span>
           </button>
         </>}/>
@@ -1464,7 +1465,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord }) {
             text={eeg.annotationText} setText={eeg.setAnnotationText} onConfirm={eeg.confirmAnnotation}
             onCancel={()=>{eeg.setAnnotationDraft(null);eeg.setIsAddingAnnotation(false);}} containerRef={eeg.containerRef}/>
         </WaveformCanvas>
-        {eeg.showAnnotationPanel && (
+        {eeg.showAnnotations && (
           <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
             isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
             selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
@@ -2016,6 +2017,7 @@ function AcquireTab() {
   const [subjectId, setSubjectId] = useState("");
   const [studyType, setStudyType] = useState("BL");
   const [showPatternTable, setShowPatternTable] = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(true);
   const timerRef = useRef(null);
 
   // Device state
@@ -2161,7 +2163,7 @@ function AcquireTab() {
           <button onClick={(e)=>{e.stopPropagation();setShowPatternTable(true);}} style={controlBtn(showPatternTable)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.List()} Pattern Table</span>
           </button>
-          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(prev => !prev);}} style={controlBtn(eeg.showAnnotationPanel)}>
+          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotations(prev => !prev);}} style={controlBtn(eeg.showAnnotations)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Bookmark()} Annotations ({eeg.annotations.length})</span>
           </button>
         </>}/>
@@ -2241,7 +2243,7 @@ function AcquireTab() {
           )}
         </WaveformCanvas>
 
-        {eeg.showAnnotationPanel && (
+        {eeg.showAnnotations && (
           <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
             isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
             selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
