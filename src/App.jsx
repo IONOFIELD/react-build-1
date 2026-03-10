@@ -531,7 +531,7 @@ function WaveformCanvas({ channels, waveformData, epochSec, epochStart, epochEnd
       ctx.fillStyle = ch === "EKG" ? "#EC4899" : "#666";
       ctx.font = "600 10px 'IBM Plex Mono', monospace"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
       ctx.fillText(ch, labelWidth - 8, yCenter);
-      ctx.strokeStyle = ch === "EKG" ? "#EC489980" : "#2d8a4eCC";
+      ctx.strokeStyle = ch === "EKG" ? "#EC4899" : "#00ff55";
       ctx.lineWidth = ch === "EKG" ? 1.2 : 0.9;
       ctx.beginPath();
       const step = Math.max(1, Math.floor(data.length / plotW / 2));
