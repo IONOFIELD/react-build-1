@@ -623,16 +623,16 @@ function EEGControls({ montage, setMontage, eegSystem, setEegSystem, recordingSy
 // ANNOTATION PANEL — floating draggable overlay
 // ══════════════════════════════════════════════════════════════
 function AnnotationPanel({ annotations, setAnnotations, isAddingAnnotation, setIsAddingAnnotation,
-  selectedAnnotationType, setSelectedAnnotationType, epochStart, epochEnd, epochSec, setCurrentEpoch, filename, onClose }) {
-  const [pos, setPos] = useState({ x: null, y: 60 });
+  selectedAnnotationType, setSelectedAnnotationType, epochStart, epochEnd, epochSec, setCurrentEpoch, filename, onClose,
+  panelPos, setPanelPos }) {
   const [dragging, setDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const panelRef = useRef(null);
 
-  // Default position: right side
+  // Default position: right side, lower on screen
   useEffect(() => {
-    if (pos.x === null) {
-      setPos({ x: window.innerWidth - 290, y: 60 });
+    if (panelPos.x === null) {
+      setPanelPos({ x: window.innerWidth - 290, y: Math.round(window.innerHeight * 0.35) });
     }
   }, []);
 
@@ -645,7 +645,7 @@ function AnnotationPanel({ annotations, setAnnotations, isAddingAnnotation, setI
 
   useEffect(() => {
     if (!dragging) return;
-    const onMove = (e) => setPos({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y });
+    const onMove = (e) => setPanelPos({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y });
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -654,7 +654,7 @@ function AnnotationPanel({ annotations, setAnnotations, isAddingAnnotation, setI
 
   return (
     <div ref={panelRef} style={{
-      position:"fixed", left:pos.x, top:pos.y, width:260, maxHeight:"70vh",
+      position:"fixed", left:panelPos.x, top:panelPos.y, width:260, maxHeight:"70vh",
       background:"#0c0c0c", border:"1px solid #2a2a2a", borderRadius:0,
       display:"flex", flexDirection:"column", zIndex:80,
       cursor: dragging ? "grabbing" : "default",
@@ -1382,7 +1382,6 @@ function IngestForm({ onClose, onIngest }) {
     const file = e.target.files[0];
     if (!file) return;
     setSelectedFile(file);
-    setForm(prev => ({...prev, sampleRate: 256}));
 
     // Extract info from filename and file size
     const name = file.name;
@@ -1542,8 +1541,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showPatternTable, setShowPatternTable] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(true);
-
-  // Use app-level annotations keyed by filename
+  const [annotationPanelPos, setAnnotationPanelPos] = useState({ x: null, y: null });
   const annotations = annotationsMap[filename] || [];
   const setAnnotations = (newAnns) => {
     const resolved = typeof newAnns === "function" ? newAnns(annotations) : newAnns;
@@ -1661,7 +1659,8 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
           selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
           epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
           setCurrentEpoch={eeg.setCurrentEpoch} filename={filename}
-          onClose={()=>setShowAnnotations(false)}/>
+          onClose={()=>setShowAnnotations(false)}
+          panelPos={annotationPanelPos} setPanelPos={setAnnotationPanelPos}/>
       )}
 
       {/* Channel context menu */}
@@ -2206,6 +2205,7 @@ function AcquireTab({ annotationsMap, setAnnotationsMap }) {
   const [studyType, setStudyType] = useState("BL");
   const [showPatternTable, setShowPatternTable] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(true);
+  const [annotationPanelPos, setAnnotationPanelPos] = useState({ x: null, y: null });
   const timerRef = useRef(null);
 
   // Use app-level annotations keyed by acquire filename
@@ -2464,7 +2464,8 @@ function AcquireTab({ annotationsMap, setAnnotationsMap }) {
           selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
           epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
           setCurrentEpoch={eeg.setCurrentEpoch} filename={acqFilename}
-          onClose={()=>setShowAnnotations(false)}/>
+          onClose={()=>setShowAnnotations(false)}
+          panelPos={annotationPanelPos} setPanelPos={setAnnotationPanelPos}/>
       )}
 
       {/* Impedance modal */}
