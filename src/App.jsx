@@ -1446,7 +1446,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord }) {
           <button onClick={(e)=>{e.stopPropagation();setShowPatternTable(true);}} style={controlBtn(showPatternTable)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.List()} Pattern Table</span>
           </button>
-          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(!eeg.showAnnotationPanel);}} style={controlBtn(eeg.showAnnotationPanel)}>
+          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(prev => !prev);}} style={controlBtn(eeg.showAnnotationPanel)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Bookmark()} Annotations ({eeg.annotations.length})</span>
           </button>
         </>}/>
@@ -2161,7 +2161,7 @@ function AcquireTab() {
           <button onClick={(e)=>{e.stopPropagation();setShowPatternTable(true);}} style={controlBtn(showPatternTable)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.List()} Pattern Table</span>
           </button>
-          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(!eeg.showAnnotationPanel);}} style={controlBtn(eeg.showAnnotationPanel)}>
+          <button onClick={(e)=>{e.stopPropagation();eeg.setShowAnnotationPanel(prev => !prev);}} style={controlBtn(eeg.showAnnotationPanel)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Bookmark()} Annotations ({eeg.annotations.length})</span>
           </button>
         </>}/>
