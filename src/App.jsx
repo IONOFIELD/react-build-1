@@ -620,19 +620,56 @@ function EEGControls({ montage, setMontage, eegSystem, setEegSystem, recordingSy
 }
 
 // ══════════════════════════════════════════════════════════════
-// ANNOTATION PANEL — shared
+// ANNOTATION PANEL — floating draggable overlay
 // ══════════════════════════════════════════════════════════════
 function AnnotationPanel({ annotations, setAnnotations, isAddingAnnotation, setIsAddingAnnotation,
-  selectedAnnotationType, setSelectedAnnotationType, epochStart, epochEnd, epochSec, setCurrentEpoch, filename }) {
+  selectedAnnotationType, setSelectedAnnotationType, epochStart, epochEnd, epochSec, setCurrentEpoch, filename, onClose }) {
+  const [pos, setPos] = useState({ x: null, y: 60 });
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const panelRef = useRef(null);
+
+  // Default position: right side
+  useEffect(() => {
+    if (pos.x === null) {
+      setPos({ x: window.innerWidth - 290, y: 60 });
+    }
+  }, []);
+
+  const onMouseDown = (e) => {
+    if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
+    setDragging(true);
+    const rect = panelRef.current.getBoundingClientRect();
+    setDragOffset({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e) => setPos({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y });
+    const onUp = () => setDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [dragging, dragOffset]);
+
   return (
-    <div style={{ width:260,borderLeft:"1px solid #1a1a1a",background:"#0c0c0c",
-      display:"flex",flexDirection:"column",flexShrink:0 }}>
-      <div style={{ padding:"10px 12px",borderBottom:"1px solid #1a1a1a",
-        display:"flex",alignItems:"center",justifyContent:"space-between" }}>
+    <div ref={panelRef} style={{
+      position:"fixed", left:pos.x, top:pos.y, width:260, maxHeight:"70vh",
+      background:"#0c0c0c", border:"1px solid #2a2a2a", borderRadius:0,
+      display:"flex", flexDirection:"column", zIndex:80,
+      cursor: dragging ? "grabbing" : "default",
+      userSelect: dragging ? "none" : "auto",
+    }}>
+      {/* Drag handle header */}
+      <div onMouseDown={onMouseDown} style={{ padding:"8px 12px", borderBottom:"1px solid #1a1a1a",
+        display:"flex", alignItems:"center", justifyContent:"space-between", cursor:"grab" }}>
         <span style={{fontSize:10,fontWeight:700,color:"#666",letterSpacing:"0.1em"}}>ANNOTATIONS</span>
-        <button onClick={()=>setIsAddingAnnotation(!isAddingAnnotation)} style={controlBtn(isAddingAnnotation)}>
-          <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Plus()} ADD</span>
-        </button>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <button onClick={()=>setIsAddingAnnotation(!isAddingAnnotation)} style={controlBtn(isAddingAnnotation)}>
+            <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Plus()} ADD</span>
+          </button>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#555",cursor:"pointer",padding:2}}>{I.X()}</button>
+        </div>
       </div>
       {isAddingAnnotation && (
         <div style={{padding:"8px 12px",borderBottom:"1px solid #1a1a1a"}}>
@@ -676,15 +713,15 @@ function AnnotationPanel({ annotations, setAnnotations, isAddingAnnotation, setI
           </div>
         ))}
       </div>
-      <div style={{padding:"10px 12px",borderTop:"1px solid #1a1a1a"}}>
+      <div style={{padding:"8px 12px",borderTop:"1px solid #1a1a1a"}}>
         <button onClick={()=>{
           const blob=new Blob([JSON.stringify(annotations,null,2)],{type:"application/json"});
           const url=URL.createObjectURL(blob); const a=document.createElement("a");
           a.href=url; a.download=`${filename||"annotations"}_annotations.json`; a.click(); URL.revokeObjectURL(url);
-        }} style={{ width:"100%",padding:"8px 0",background:"#111",border:"1px solid #222",
-          borderRadius:0,color:"#888",cursor:"pointer",fontSize:11,fontWeight:600,
+        }} style={{ width:"100%",padding:"6px 0",background:"#111",border:"1px solid #222",
+          borderRadius:0,color:"#888",cursor:"pointer",fontSize:10,fontWeight:600,
           display:"flex",alignItems:"center",justifyContent:"center",gap:6 }}>
-          {I.Save()} Export Annotations
+          {I.Save()} Export
         </button>
       </div>
     </div>
@@ -1334,23 +1371,145 @@ function IngestForm({ onClose, onIngest }) {
     subjectId:"",studyType:"BL",date:new Date().toISOString().split("T")[0],
     channels:21,sampleRate:256,duration:30,montage:"10-20",notes:"",
   });
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileInfo, setFileInfo] = useState(null);
+  const fileInputRef = useRef(null);
+
   const inputStyle = {width:"100%",padding:"8px 10px",background:"#0d0d0d",border:"1px solid #2a2a2a",borderRadius:0,color:"#e0e0e0",fontSize:13,fontFamily:"'IBM Plex Mono', monospace",outline:"none",boxSizing:"border-box"};
   const formLabel = {display:"block",fontSize:11,color:"#777",marginBottom:4,fontWeight:600,letterSpacing:"0.05em",textTransform:"uppercase"};
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setSelectedFile(file);
+
+    // Extract info from filename and file size
+    const name = file.name;
+    const sizeMB = Math.round(file.size / 1024 / 1024 * 10) / 10;
+    const isEdf = name.toLowerCase().endsWith(".edf") || name.toLowerCase().endsWith(".bdf");
+
+    // Try to parse REACT naming convention if present
+    const reactMatch = name.match(/REACT-(\w+)-(\w+)-(\d{4})(\d{2})(\d{2})/);
+
+    // Estimate duration from file size (rough: filesize / (channels * sampleRate * 2 bytes) / 60)
+    const estChannels = form.channels || 21;
+    const estRate = form.sampleRate || 256;
+    const estDuration = Math.round(file.size / (estChannels * estRate * 2) / 60);
+
+    setFileInfo({
+      name: name,
+      size: sizeMB,
+      isEdf: isEdf,
+      estDuration: estDuration > 0 ? estDuration : 30,
+    });
+
+    // Auto-fill form from file info
+    if (reactMatch) {
+      const studyType = reactMatch[1];
+      const dateStr = `${reactMatch[3]}-${reactMatch[4]}-${reactMatch[5]}`;
+      if (STUDY_TYPES[studyType]) setForm(prev => ({...prev, studyType}));
+      setForm(prev => ({...prev, date: dateStr}));
+    } else {
+      // Try to get date from file lastModified
+      const fDate = new Date(file.lastModified).toISOString().split("T")[0];
+      setForm(prev => ({...prev, date: fDate}));
+    }
+
+    if (estDuration > 0) {
+      setForm(prev => ({...prev, duration: estDuration}));
+    }
+
+    // Read EDF header (first 256 bytes) for channel/sample info
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const header = new Uint8Array(ev.target.result);
+        const decoder = new TextDecoder("ascii");
+        // EDF spec: bytes 236-244 = number of data records, 244-252 = duration of record
+        // bytes 252-256 = number of signals
+        const nSignals = parseInt(decoder.decode(header.slice(252, 256)).trim());
+        if (nSignals > 0 && nSignals < 200) {
+          setForm(prev => ({...prev, channels: nSignals}));
+          setFileInfo(prev => ({...prev, detectedChannels: nSignals}));
+        }
+        // bytes 236-244 = number of data records
+        const nRecords = parseInt(decoder.decode(header.slice(236, 244)).trim());
+        // bytes 244-252 = duration of a data record in seconds
+        const recordDuration = parseFloat(decoder.decode(header.slice(244, 252)).trim());
+        if (nRecords > 0 && recordDuration > 0) {
+          const totalMin = Math.round(nRecords * recordDuration / 60);
+          if (totalMin > 0) {
+            setForm(prev => ({...prev, duration: totalMin}));
+            setFileInfo(prev => ({...prev, detectedDuration: totalMin}));
+          }
+        }
+        // Patient ID from bytes 8-88
+        const patientId = decoder.decode(header.slice(8, 88)).trim();
+        if (patientId && patientId !== "X" && patientId.length > 0) {
+          setFileInfo(prev => ({...prev, patientField: patientId}));
+        }
+        // Recording date from bytes 168-176
+        const startDate = decoder.decode(header.slice(168, 176)).trim();
+        if (startDate) {
+          setFileInfo(prev => ({...prev, startDate}));
+        }
+      } catch (err) {
+        // Not a valid EDF, that's fine
+      }
+    };
+    reader.readAsArrayBuffer(file.slice(0, 512));
+  };
+
   const handleSubmit = () => {
     if (!form.subjectId) return;
+    const fileSizeMB = selectedFile ? Math.round(selectedFile.size/1024/1024*10)/10 :
+      Math.round(form.channels*form.sampleRate*form.duration*60*2/1024/1024*10)/10;
     onIngest({
-      id:`REC-${Date.now()}`,subjectHash:hashSubjectId(form.subjectId),subjectId:form.subjectId,sport:"Football",position:"—",
+      id:`REC-${Date.now()}`,subjectHash:hashSubjectId(form.subjectId),subjectId:form.subjectId,sport:"",position:"",
       studyType:form.studyType,date:form.date,filename:generateFilename(form.subjectId,form.studyType,form.date),
       channels:form.channels,duration:form.duration,sampleRate:form.sampleRate,
-      fileSize:Math.round(form.channels*form.sampleRate*form.duration*60*2/1024/1024*10)/10,
+      fileSize:fileSizeMB,
       montage:form.montage,status:"pending",isTest:false,notes:form.notes,uploadedAt:new Date().toISOString(),
+      sourceFile: selectedFile ? selectedFile.name : null,
     }); onClose();
   };
+
   return (<>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
       <h3 style={{margin:0,color:"#e0e0e0",fontSize:16,fontWeight:700}}>Ingest New Record</h3>
       <button onClick={onClose} style={{background:"none",border:"none",color:"#666",cursor:"pointer",padding:4}}>{I.X()}</button>
     </div>
+
+    {/* File picker */}
+    <div style={{marginBottom:20}}>
+      <input ref={fileInputRef} type="file" accept=".edf,.bdf,.EDF,.BDF" onChange={handleFileSelect}
+        style={{display:"none"}}/>
+      <button onClick={()=>fileInputRef.current.click()} style={{
+        width:"100%",padding:"16px 20px",background:"#0a0a0a",border:"2px dashed #2a2a2a",borderRadius:0,
+        color:selectedFile?"#7ec8d9":"#555",cursor:"pointer",fontSize:12,fontWeight:600,
+        display:"flex",flexDirection:"column",alignItems:"center",gap:8,transition:"border-color 0.15s",
+      }}
+        onMouseEnter={e=>e.currentTarget.style.borderColor="#4a9bab"}
+        onMouseLeave={e=>e.currentTarget.style.borderColor="#2a2a2a"}>
+        {selectedFile ? (<>
+          <span style={{display:"flex",alignItems:"center",gap:6}}>{I.Check(14)} File Selected</span>
+          <span style={{fontSize:11,color:"#7ec8d9",fontFamily:"'IBM Plex Mono', monospace"}}>{selectedFile.name}</span>
+          <span style={{fontSize:10,color:"#555"}}>{fileInfo?.size} MB{fileInfo?.detectedChannels ? ` - ${fileInfo.detectedChannels} channels detected` : ""}{fileInfo?.detectedDuration ? ` - ${fileInfo.detectedDuration} min` : ""}</span>
+        </>) : (<>
+          <span style={{display:"flex",alignItems:"center",gap:6}}>{I.Upload(14)} Select EDF / BDF File</span>
+          <span style={{fontSize:10,color:"#444"}}>Click to browse, or drag and drop</span>
+        </>)}
+      </button>
+      {fileInfo && !fileInfo.isEdf && (
+        <div style={{marginTop:6,fontSize:10,color:"#F59E0B"}}>Warning: file does not have .edf or .bdf extension</div>
+      )}
+      {fileInfo?.patientField && (
+        <div style={{marginTop:6,fontSize:10,color:"#F59E0B"}}>
+          EDF header contains patient ID field: "{fileInfo.patientField}" - this will NOT be stored. De-identified filename will be used.
+        </div>
+      )}
+    </div>
+
     {form.subjectId&&<div style={{background:"#0a0a0a",border:"1px solid #1a3040",borderRadius:0,padding:"8px 12px",marginBottom:20,fontFamily:"'IBM Plex Mono', monospace",fontSize:12,color:"#7ec8d9"}}>
       <span style={{color:"#555",fontSize:10,display:"block",marginBottom:2}}>DE-IDENTIFIED FILENAME</span>{generateFilename(form.subjectId,form.studyType,form.date)}
     </div>}
@@ -1358,10 +1517,11 @@ function IngestForm({ onClose, onIngest }) {
       <div><label style={formLabel}>Internal Subject ID</label><SubjectIdInput value={form.subjectId} onChange={v=>setForm({...form,subjectId:v})}/></div>
       <div><label style={formLabel}>Study Type</label><select style={inputStyle} value={form.studyType} onChange={e=>setForm({...form,studyType:e.target.value})}>{Object.entries(STUDY_TYPES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select></div>
       <div><label style={formLabel}>Recording Date</label><input style={inputStyle} type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></div>
-      <div><label style={formLabel}>Montage</label><select style={inputStyle} value={form.montage} onChange={e=>setForm({...form,montage:e.target.value})}><option value="10-20">10-20</option><option value="10-10">10-10</option><option value="Custom">Custom</option></select></div>
+      <div><label style={formLabel}>Montage</label><select style={inputStyle} value={form.montage} onChange={e=>setForm({...form,montage:e.target.value})}><option value="10-20">10-20</option><option value="10-10">10-10</option><option value="hd-40">HD-40</option><option value="Custom">Custom</option></select></div>
       <div><label style={formLabel}>Channels</label><input style={inputStyle} type="number" value={form.channels} onChange={e=>setForm({...form,channels:parseInt(e.target.value)||0})}/></div>
-      <div><label style={formLabel}>Sample Rate (Hz)</label><select style={inputStyle} value={form.sampleRate} onChange={e=>setForm({...form,sampleRate:parseInt(e.target.value)})}><option value={256}>256 Hz</option><option value={512}>512 Hz</option><option value={1024}>1024 Hz</option></select></div>
+      <div><label style={formLabel}>Sample Rate (Hz)</label><select style={inputStyle} value={form.sampleRate} onChange={e=>setForm({...form,sampleRate:parseInt(e.target.value)})}><option value={128}>128 Hz</option><option value={256}>256 Hz</option><option value={512}>512 Hz</option><option value={1024}>1024 Hz</option><option value={2048}>2048 Hz</option></select></div>
       <div><label style={formLabel}>Duration (min)</label><input style={inputStyle} type="number" value={form.duration} onChange={e=>setForm({...form,duration:parseInt(e.target.value)||0})}/></div>
+      <div><label style={formLabel}>Notes</label><input style={inputStyle} value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="Optional notes"/></div>
     </div>
     <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
       <button onClick={onClose} style={{padding:"8px 16px",background:"transparent",border:"1px solid #333",borderRadius:0,color:"#888",cursor:"pointer",fontSize:13}}>Cancel</button>
@@ -1479,7 +1639,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
         <WaveformCanvas channels={eeg.channels} waveformData={eeg.waveformData} epochSec={eeg.epochSec}
           epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} sampleRate={eeg.sampleRate}
           sensitivity={eeg.sensitivity} channelSensitivity={eeg.channelSensitivity}
-          annotations={eeg.annotations} annotationDraft={eeg.annotationDraft}
+          annotations={annotations} annotationDraft={eeg.annotationDraft}
           selectedAnnotationType={eeg.selectedAnnotationType} hoveredTime={eeg.hoveredTime}
           isAddingAnnotation={eeg.isAddingAnnotation} onMouseMove={eeg.handleCanvasMouseMove}
           onMouseLeave={()=>eeg.setHoveredTime(null)} onClick={eeg.handleCanvasClick}
@@ -1489,16 +1649,19 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
             text={eeg.annotationText} setText={eeg.setAnnotationText} onConfirm={eeg.confirmAnnotation}
             onCancel={()=>{eeg.setAnnotationDraft(null);eeg.setIsAddingAnnotation(false);}} containerRef={eeg.containerRef}/>
         </WaveformCanvas>
-        {showAnnotations && (
-          <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
-            isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
-            selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
-            epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
-            setCurrentEpoch={eeg.setCurrentEpoch} filename={filename}/>
-        )}
       </div>
       <EpochNav currentEpoch={eeg.currentEpoch} setCurrentEpoch={eeg.setCurrentEpoch}
         totalEpochs={eeg.totalEpochs} epochStart={eeg.epochStart} epochEnd={eeg.epochEnd}/>
+
+      {/* Floating annotation panel */}
+      {showAnnotations && (
+        <AnnotationPanel annotations={annotations} setAnnotations={setAnnotations}
+          isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
+          selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
+          epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
+          setCurrentEpoch={eeg.setCurrentEpoch} filename={filename}
+          onClose={()=>setShowAnnotations(false)}/>
+      )}
 
       {/* Channel context menu */}
       {eeg.contextMenu && (
@@ -2218,7 +2381,7 @@ function AcquireTab({ annotationsMap, setAnnotationsMap }) {
         <WaveformCanvas channels={eeg.channels} waveformData={eeg.waveformData} epochSec={eeg.epochSec}
           epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} sampleRate={eeg.sampleRate}
           sensitivity={eeg.sensitivity} channelSensitivity={eeg.channelSensitivity}
-          annotations={eeg.annotations} annotationDraft={eeg.annotationDraft}
+          annotations={annotations} annotationDraft={eeg.annotationDraft}
           selectedAnnotationType={eeg.selectedAnnotationType} hoveredTime={eeg.hoveredTime}
           isAddingAnnotation={eeg.isAddingAnnotation} onMouseMove={eeg.handleCanvasMouseMove}
           onMouseLeave={()=>eeg.setHoveredTime(null)} onClick={eeg.handleCanvasClick}
@@ -2288,18 +2451,20 @@ function AcquireTab({ annotationsMap, setAnnotationsMap }) {
             </div>
           )}
         </WaveformCanvas>
-
-        {showAnnotations && (
-          <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
-            isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
-            selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
-            epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
-            setCurrentEpoch={eeg.setCurrentEpoch} filename={subjectId ? generateFilename(subjectId,studyType,new Date().toISOString().split("T")[0]) : "acquire"}/>
-        )}
       </div>
 
       <EpochNav currentEpoch={eeg.currentEpoch} setCurrentEpoch={eeg.setCurrentEpoch}
         totalEpochs={eeg.totalEpochs} epochStart={eeg.epochStart} epochEnd={eeg.epochEnd}/>
+
+      {/* Floating annotation panel */}
+      {showAnnotations && (
+        <AnnotationPanel annotations={annotations} setAnnotations={setAnnotations}
+          isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
+          selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
+          epochStart={eeg.epochStart} epochEnd={eeg.epochEnd} epochSec={eeg.epochSec}
+          setCurrentEpoch={eeg.setCurrentEpoch} filename={acqFilename}
+          onClose={()=>setShowAnnotations(false)}/>
+      )}
 
       {/* Impedance modal */}
       {showImpedance && impedances && (
