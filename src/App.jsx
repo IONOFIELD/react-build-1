@@ -155,6 +155,91 @@ function generateEEGSignal(channelIndex, sampleRate, durationSec, seed = 0) {
   return data;
 }
 
+// ── EDF File Parser ──
+function parseEDFFile(arrayBuffer) {
+  try {
+    const bytes = new Uint8Array(arrayBuffer);
+    const decoder = new TextDecoder("ascii");
+    const readStr = (o, l) => decoder.decode(bytes.slice(o, o + l)).trim();
+    const readInt = (o, l) => parseInt(readStr(o, l)) || 0;
+    const readFloat = (o, l) => parseFloat(readStr(o, l)) || 0;
+
+    const patientId = readStr(8, 80);
+    const recordingId = readStr(88, 80);
+    const startDate = readStr(168, 8);
+    const startTime = readStr(176, 8);
+    const headerBytes = readInt(184, 8);
+    const numRecords = readInt(236, 8);
+    const recordDuration = readFloat(244, 8);
+    const numSignals = readInt(252, 4);
+
+    if (numSignals <= 0 || numSignals > 512 || numRecords <= 0) return { error: "Invalid EDF" };
+
+    const sigs = [];
+    const b = 256;
+    for (let i = 0; i < numSignals; i++) sigs.push({ label: readStr(b + i*16, 16), physMin:0, physMax:0, digMin:0, digMax:0, numSamples:0 });
+    let off = b + numSignals*16 + numSignals*80 + numSignals*8;
+    for (let i = 0; i < numSignals; i++) sigs[i].physMin = readFloat(off + i*8, 8);
+    off += numSignals*8;
+    for (let i = 0; i < numSignals; i++) sigs[i].physMax = readFloat(off + i*8, 8);
+    off += numSignals*8;
+    for (let i = 0; i < numSignals; i++) sigs[i].digMin = readInt(off + i*8, 8);
+    off += numSignals*8;
+    for (let i = 0; i < numSignals; i++) sigs[i].digMax = readInt(off + i*8, 8);
+    off += numSignals*8 + numSignals*80;
+    for (let i = 0; i < numSignals; i++) sigs[i].numSamples = readInt(off + i*8, 8);
+
+    sigs.forEach(s => {
+      const dr = s.digMax - s.digMin; const pr = s.physMax - s.physMin;
+      s.scale = dr !== 0 ? pr / dr : 1;
+      s.offset = s.physMin - s.digMin * s.scale;
+    });
+
+    const bytesPerRec = sigs.reduce((sum, s) => sum + s.numSamples, 0) * 2;
+    const channelData = sigs.map(s => new Float32Array(s.numSamples * numRecords));
+    const dv = new DataView(arrayBuffer);
+
+    for (let rec = 0; rec < numRecords; rec++) {
+      let rOff = headerBytes + rec * bytesPerRec;
+      for (let si = 0; si < numSignals; si++) {
+        const ns = sigs[si].numSamples;
+        const dest = rec * ns;
+        for (let s = 0; s < ns; s++) {
+          if (rOff + 1 < arrayBuffer.byteLength) {
+            channelData[si][dest + s] = dv.getInt16(rOff, true) * sigs[si].scale + sigs[si].offset;
+          }
+          rOff += 2;
+        }
+      }
+    }
+
+    const sampleRate = recordDuration > 0 ? Math.round(sigs[0].numSamples / recordDuration) : 256;
+    return {
+      patientId, recordingId, startDate, startTime, numRecords, recordDuration, numSignals,
+      totalDuration: numRecords * recordDuration, sampleRate,
+      signals: sigs.map(s => ({ label: s.label, numSamples: s.numSamples, sampleRate: recordDuration > 0 ? Math.round(s.numSamples / recordDuration) : 256 })),
+      channelData, channelLabels: sigs.map(s => s.label),
+    };
+  } catch (e) { return { error: e.message }; }
+}
+
+function getEDFEpochData(edfData, channelIndex, epochStart, epochSec, targetSr) {
+  if (!edfData?.channelData || channelIndex >= edfData.channelData.length) return null;
+  const sigSr = edfData.signals[channelIndex]?.sampleRate || edfData.sampleRate;
+  const start = Math.floor(epochStart * sigSr);
+  const raw = edfData.channelData[channelIndex];
+  if (start >= raw.length) return null;
+  const slice = raw.slice(start, Math.min(start + Math.floor(epochSec * sigSr), raw.length));
+  if (sigSr !== targetSr && targetSr > 0) {
+    const tgt = Math.floor(epochSec * targetSr);
+    const out = new Float32Array(tgt);
+    const ratio = slice.length / tgt;
+    for (let i = 0; i < tgt; i++) { const si = i * ratio; const lo = Math.floor(si); const hi = Math.min(lo+1, slice.length-1); out[i] = slice[lo]*(1-(si-lo)) + slice[hi]*(si-lo); }
+    return out;
+  }
+  return slice;
+}
+
 // ── Filters ──
 function applyHighPass(data, cutoff, sr) {
   if (cutoff <= 0) return data;
@@ -1213,7 +1298,7 @@ function ChannelContextMenu({ x, y, channelName, isHidden, channelSens, onToggle
 // ══════════════════════════════════════════════════════════════
 // useEEGState — shared hook for viewer state
 // ══════════════════════════════════════════════════════════════
-function useEEGState(totalDuration = 600) {
+function useEEGState(totalDuration = 600, edfData = null) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [montage, setMontage] = useState("bipolar-longitudinal");
@@ -1272,7 +1357,41 @@ function useEEGState(totalDuration = 600) {
   const waveformData = useMemo(() => {
     return channels.map((ch) => {
       const fullIdx = allChannels.indexOf(ch);
-      let raw = generateEEGSignal(fullIdx, sampleRate, epochSec, currentEpoch * 1000 + fullIdx);
+      let raw;
+
+      // Use real EDF data if available
+      if (edfData && edfData.channelData) {
+        // Try to match channel label from EDF to montage channel
+        // For referential/bipolar, the EDF stores raw electrode data
+        // Find the best matching EDF channel index
+        const chName = ch.split("-")[0]; // First electrode in derivation
+        const edfIdx = edfData.channelLabels.findIndex(l =>
+          l.toUpperCase().replace(/[\s\-\.]/g, "") === chName.toUpperCase().replace(/[\s\-\.]/g, "")
+        );
+        if (edfIdx >= 0) {
+          raw = getEDFEpochData(edfData, edfIdx, epochStart, epochSec, sampleRate);
+        }
+        // If channel is a bipolar derivation (e.g., Fp1-F3), compute difference
+        if (ch.includes("-") && ch !== "EKG") {
+          const parts = ch.split("-");
+          const idx1 = edfData.channelLabels.findIndex(l => l.toUpperCase().replace(/[\s\-\.]/g, "") === parts[0].toUpperCase().replace(/[\s\-\.]/g, ""));
+          const idx2 = edfData.channelLabels.findIndex(l => l.toUpperCase().replace(/[\s\-\.]/g, "") === parts[1].toUpperCase().replace(/[\s\-\.]/g, ""));
+          if (idx1 >= 0 && idx2 >= 0 && parts[1] !== "Avg" && parts[1] !== "Cz") {
+            const d1 = getEDFEpochData(edfData, idx1, epochStart, epochSec, sampleRate);
+            const d2 = getEDFEpochData(edfData, idx2, epochStart, epochSec, sampleRate);
+            if (d1 && d2) {
+              raw = new Float32Array(d1.length);
+              for (let i = 0; i < d1.length; i++) raw[i] = d1[i] - (i < d2.length ? d2[i] : 0);
+            }
+          }
+        }
+      }
+
+      // Fall back to simulated if no EDF data for this channel
+      if (!raw) {
+        raw = generateEEGSignal(fullIdx, sampleRate, epochSec, currentEpoch * 1000 + fullIdx);
+      }
+
       const chHpf = channelHpf[ch] !== undefined ? channelHpf[ch] : hpf;
       const chLpf = channelLpf[ch] !== undefined ? channelLpf[ch] : lpf;
       if (chHpf > 0) raw = applyHighPass(raw, chHpf, sampleRate);
@@ -1280,7 +1399,7 @@ function useEEGState(totalDuration = 600) {
       if (notch > 0) raw = applyNotch(raw, notch, sampleRate);
       return raw;
     });
-  }, [montage, hpf, lpf, notch, epochSec, currentEpoch, sampleRate, channels, allChannels, hiddenChannels, channelHpf, channelLpf]);
+  }, [montage, hpf, lpf, notch, epochSec, currentEpoch, sampleRate, channels, allChannels, hiddenChannels, channelHpf, channelLpf, edfData, epochStart]);
 
   const getTimeFromX = useCallback((clientX) => {
     const canvas = canvasRef.current;
@@ -1341,7 +1460,7 @@ function useEEGState(totalDuration = 600) {
 // ══════════════════════════════════════════════════════════════
 // TAB: LIBRARY
 // ══════════════════════════════════════════════════════════════
-function LibraryTab({ records, setRecords, onOpenReview, updateRecordStatus }) {
+function LibraryTab({ records, setRecords, onOpenReview, updateRecordStatus, edfFileStore, setEdfFileStore }) {
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
@@ -1516,7 +1635,7 @@ function LibraryTab({ records, setRecords, onOpenReview, updateRecordStatus }) {
       {showIngest && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={()=>setShowIngest(false)}>
           <div onClick={e=>e.stopPropagation()} style={{background:"#111",border:"1px solid #2a2a2a",borderRadius:0,padding:28,width:480,maxHeight:"80vh",overflow:"auto"}}>
-            <IngestForm onClose={()=>setShowIngest(false)} onIngest={handleIngest}/>
+            <IngestForm onClose={()=>setShowIngest(false)} onIngest={handleIngest} setEdfFileStore={setEdfFileStore}/>
           </div>
         </div>
       )}
@@ -1719,7 +1838,7 @@ function ExportModal({ records, onClose }) {
   );
 }
 
-function IngestForm({ onClose, onIngest }) {
+function IngestForm({ onClose, onIngest, setEdfFileStore }) {
   const [form, setForm] = useState({
     subjectId:"",studyType:"BL",date:new Date().toISOString().split("T")[0],
     channels:21,sampleRate:256,duration:30,montage:"10-20",notes:"",
@@ -1817,14 +1936,31 @@ function IngestForm({ onClose, onIngest }) {
     if (!form.subjectId) return;
     const fileSizeMB = selectedFile ? Math.round(selectedFile.size/1024/1024*10)/10 :
       Math.round(form.channels*form.sampleRate*form.duration*60*2/1024/1024*10)/10;
-    onIngest({
+    const deIdFilename = generateFilename(form.subjectId,form.studyType,form.date);
+    const record = {
       id:`REC-${Date.now()}`,subjectHash:hashSubjectId(form.subjectId),subjectId:form.subjectId,sport:"",position:"",
-      studyType:form.studyType,date:form.date,filename:generateFilename(form.subjectId,form.studyType,form.date),
+      studyType:form.studyType,date:form.date,filename:deIdFilename,
       channels:form.channels,duration:form.duration,sampleRate:form.sampleRate,
       fileSize:fileSizeMB,
       montage:form.montage,status:"pending",isTest:false,notes:form.notes,uploadedAt:new Date().toISOString(),
       sourceFile: selectedFile ? selectedFile.name : null,
-    }); onClose();
+      hasEdfData: !!selectedFile,
+    };
+
+    if (selectedFile && setEdfFileStore) {
+      // Read the full file and parse EDF
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const parsed = parseEDFFile(ev.target.result);
+        if (!parsed.error) {
+          setEdfFileStore(prev => ({ ...prev, [deIdFilename]: parsed }));
+        }
+      };
+      reader.readAsArrayBuffer(selectedFile);
+    }
+
+    onIngest(record);
+    onClose();
   };
 
   return (<>
@@ -1888,9 +2024,11 @@ function IngestForm({ onClose, onIngest }) {
 // ══════════════════════════════════════════════════════════════
 // TAB: REVIEW
 // ══════════════════════════════════════════════════════════════
-function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annotationsMap, setAnnotationsMap }) {
-  const eeg = useEEGState(600);
+function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annotationsMap, setAnnotationsMap, edfFileStore }) {
   const filename = record?.filename || "REACT-BL-A7F3-20260308-001.edf";
+  const edfData = edfFileStore?.[filename] || null;
+  const totalDur = edfData ? edfData.totalDuration : 600;
+  const eeg = useEEGState(totalDur, edfData);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [showPatternTable, setShowPatternTable] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(true);
@@ -1933,7 +2071,9 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
         <span style={{color:"#333"}}>|</span><span>{eeg.sampleRate}Hz</span>
         <span style={{color:"#333"}}>|</span><span>{eeg.channels.length}ch</span>
         {eeg.hiddenChannels.size > 0 && <span style={{color:"#F59E0B"}}>({eeg.hiddenChannels.size} hidden)</span>}
-        <span style={{color:"#333"}}>|</span><span>10:00</span>
+        <span style={{color:"#333"}}>|</span><span>{edfData ? `${Math.floor(edfData.totalDuration/60)}:${String(Math.floor(edfData.totalDuration%60)).padStart(2,"0")}` : "10:00"}</span>
+        <span style={{color:"#333"}}>|</span>
+        <span style={{color:edfData?"#10B981":"#555",fontWeight:edfData?700:400}}>{edfData?"LIVE EDF":"SIMULATED"}</span>
         <div style={{flex:1}}/>
         {record && (
           <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -2873,6 +3013,7 @@ export default function ReactEEGApp() {
   const [records, setRecords] = useState([]);
   const [reviewRecord, setReviewRecord] = useState(null);
   const [annotationsMap, setAnnotationsMap] = useState({});
+  const [edfFileStore, setEdfFileStore] = useState({});
   const [initialized, setInitialized] = useState(false);
   const [dataDir, setDataDir] = useState("");
 
@@ -3037,8 +3178,8 @@ export default function ReactEEGApp() {
 
       {/* ══ Tab Content ══ */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",borderTop:"1px solid #2a2a2a"}}>
-        {activeTab === "library" && <LibraryTab records={records} setRecords={setRecords} onOpenReview={openReview} updateRecordStatus={updateRecordStatus}/>}
-        {activeTab === "review" && <ReviewTab record={reviewRecord} updateRecordStatus={updateRecordStatus} records={records} onSelectRecord={openReview} annotationsMap={annotationsMap} setAnnotationsMap={setAnnotationsMap}/>}
+        {activeTab === "library" && <LibraryTab records={records} setRecords={setRecords} onOpenReview={openReview} updateRecordStatus={updateRecordStatus} edfFileStore={edfFileStore} setEdfFileStore={setEdfFileStore}/>}
+        {activeTab === "review" && <ReviewTab record={reviewRecord} updateRecordStatus={updateRecordStatus} records={records} onSelectRecord={openReview} annotationsMap={annotationsMap} setAnnotationsMap={setAnnotationsMap} edfFileStore={edfFileStore}/>}
         {activeTab === "acquire" && <AcquireTab annotationsMap={annotationsMap} setAnnotationsMap={setAnnotationsMap}/>}
       </div>
     </div>
