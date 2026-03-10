@@ -214,6 +214,7 @@ const I = {
   Folder: (s=14) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>,
   Edit: (s=14) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
   Package: (s=14) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m16.5 9.4-9-5.19"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" y1="22" x2="12" y2="12"/></svg>,
+  BarChart: (s=14) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
 };
 
 // ── Seed data — 5 test records ──
@@ -615,6 +616,358 @@ function EEGControls({ montage, setMontage, eegSystem, setEegSystem, recordingSy
         </div></div>
       <div style={{flex:1}}/>
       {rightContent}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// QUANTITATIVE EEG ANALYSIS PANEL — floating overlay
+// ══════════════════════════════════════════════════════════════
+function QuantAnalysisPanel({ waveformData, channels, sampleRate, epochSec, epochStart, onClose, panelPos, setPanelPos }) {
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [activeView, setActiveView] = useState("bands");
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    if (panelPos.x === null) {
+      setPanelPos({ x: 20, y: Math.round(window.innerHeight * 0.15) });
+    }
+  }, []);
+
+  const onMouseDown = (e) => {
+    if (e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
+    setDragging(true);
+    const rect = panelRef.current.getBoundingClientRect();
+    setDragOffset({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e) => setPanelPos({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y });
+    const onUp = () => setDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [dragging, dragOffset]);
+
+  // Compute spectral power per channel using simple FFT approximation
+  const computeBandPower = (data, sr) => {
+    if (!data || data.length === 0) return { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0, total: 0 };
+    const N = data.length;
+    const freqRes = sr / N;
+
+    // Simple DFT magnitude for band ranges
+    const bandRanges = { delta: [0.5, 4], theta: [4, 8], alpha: [8, 13], beta: [13, 30], gamma: [30, 50] };
+    const powers = {};
+    let total = 0;
+
+    Object.entries(bandRanges).forEach(([band, [fLow, fHigh]]) => {
+      let bandPow = 0;
+      const kLow = Math.max(1, Math.round(fLow / freqRes));
+      const kHigh = Math.min(Math.floor(N / 2), Math.round(fHigh / freqRes));
+      for (let k = kLow; k <= kHigh; k++) {
+        let re = 0, im = 0;
+        for (let n = 0; n < N; n++) {
+          const angle = (2 * Math.PI * k * n) / N;
+          re += data[n] * Math.cos(angle);
+          im -= data[n] * Math.sin(angle);
+        }
+        bandPow += (re * re + im * im) / (N * N);
+      }
+      powers[band] = bandPow;
+      total += bandPow;
+    });
+    powers.total = total;
+    return powers;
+  };
+
+  // Analyze all visible channels for current epoch
+  const analysis = useMemo(() => {
+    if (!waveformData || waveformData.length === 0) return null;
+
+    // Subsample for performance (use first 512 samples max for FFT)
+    const maxSamples = Math.min(512, waveformData[0]?.length || 0);
+
+    const channelData = channels.map((ch, i) => {
+      const raw = waveformData[i];
+      if (!raw) return { channel: ch, bands: { delta:0, theta:0, alpha:0, beta:0, gamma:0, total:0 } };
+      const sub = raw.slice(0, maxSamples);
+      const bands = computeBandPower(sub, sampleRate);
+      return { channel: ch, bands };
+    });
+
+    // Compute averages
+    const avgBands = { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0, total: 0 };
+    const eegChannels = channelData.filter(c => c.channel !== "EKG");
+    eegChannels.forEach(c => {
+      Object.keys(avgBands).forEach(b => { avgBands[b] += c.bands[b]; });
+    });
+    if (eegChannels.length > 0) {
+      Object.keys(avgBands).forEach(b => { avgBands[b] /= eegChannels.length; });
+    }
+
+    // Alpha peak frequency (find max power in 7-14Hz range)
+    let peakAlphaFreq = 10;
+    if (eegChannels.length > 0) {
+      const testData = waveformData[Math.floor(channels.length / 2)]?.slice(0, maxSamples);
+      if (testData) {
+        const N = testData.length;
+        const freqRes = sampleRate / N;
+        let maxPow = 0;
+        for (let f = 7; f <= 14; f += 0.25) {
+          const k = Math.round(f / freqRes);
+          let re = 0, im = 0;
+          for (let n = 0; n < N; n++) {
+            const angle = (2 * Math.PI * k * n) / N;
+            re += testData[n] * Math.cos(angle);
+            im -= testData[n] * Math.sin(angle);
+          }
+          const pow = re * re + im * im;
+          if (pow > maxPow) { maxPow = pow; peakAlphaFreq = f; }
+        }
+      }
+    }
+
+    // Hemispheric asymmetry (compare left vs right channel pairs)
+    const leftChannels = channelData.filter(c => /^(Fp1|F3|C3|P3|O1|F7|T3|T5)/.test(c.channel.split("-")[0]));
+    const rightChannels = channelData.filter(c => /^(Fp2|F4|C4|P4|O2|F8|T4|T6)/.test(c.channel.split("-")[0]));
+    const leftAlpha = leftChannels.length > 0 ? leftChannels.reduce((s, c) => s + c.bands.alpha, 0) / leftChannels.length : 0;
+    const rightAlpha = rightChannels.length > 0 ? rightChannels.reduce((s, c) => s + c.bands.alpha, 0) / rightChannels.length : 0;
+    const asymmetryIndex = (leftAlpha + rightAlpha) > 0 ? ((rightAlpha - leftAlpha) / (rightAlpha + leftAlpha) * 100) : 0;
+
+    // Theta/Beta ratio (frontal)
+    const frontalChannels = channelData.filter(c => /^(Fp1|Fp2|F3|F4|Fz)/.test(c.channel.split("-")[0]));
+    const frontalTheta = frontalChannels.length > 0 ? frontalChannels.reduce((s, c) => s + c.bands.theta, 0) / frontalChannels.length : 0;
+    const frontalBeta = frontalChannels.length > 0 ? frontalChannels.reduce((s, c) => s + c.bands.beta, 0) / frontalChannels.length : 0;
+    const thetaBetaRatio = frontalBeta > 0 ? frontalTheta / frontalBeta : 0;
+
+    // Flag epochs with excessive slow activity
+    const flags = [];
+    channelData.forEach(c => {
+      if (c.channel === "EKG") return;
+      const total = c.bands.total || 1;
+      const deltaPct = (c.bands.delta / total) * 100;
+      const thetaPct = (c.bands.theta / total) * 100;
+      if (deltaPct > 60) flags.push({ channel: c.channel, type: "Elevated Delta", value: `${deltaPct.toFixed(0)}%`, severity: "high" });
+      else if (deltaPct > 45) flags.push({ channel: c.channel, type: "Moderate Delta", value: `${deltaPct.toFixed(0)}%`, severity: "med" });
+      if (thetaPct > 40) flags.push({ channel: c.channel, type: "Elevated Theta", value: `${thetaPct.toFixed(0)}%`, severity: "high" });
+    });
+
+    return { channelData, avgBands, peakAlphaFreq, asymmetryIndex, thetaBetaRatio, flags };
+  }, [waveformData, channels, sampleRate]);
+
+  if (!analysis) return null;
+
+  const bandColors = { delta: "#6366F1", theta: "#F59E0B", alpha: "#10B981", beta: "#3B82F6", gamma: "#EC4899" };
+  const bandLabels = { delta: "Delta (0.5-4Hz)", theta: "Theta (4-8Hz)", alpha: "Alpha (8-13Hz)", beta: "Beta (13-30Hz)", gamma: "Gamma (30-50Hz)" };
+
+  // Bar renderer
+  const PowerBar = ({ value, max, color, label, pct }) => (
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+      <span style={{fontSize:9,color:"#666",width:50,textAlign:"right",fontFamily:"'IBM Plex Mono', monospace"}}>{label}</span>
+      <div style={{flex:1,height:10,background:"#0a0a0a",border:"1px solid #1a1a1a",position:"relative"}}>
+        <div style={{height:"100%",background:color,width:`${Math.min(100, (value/max)*100)}%`,transition:"width 0.2s"}}/>
+      </div>
+      <span style={{fontSize:9,color:"#888",width:36,textAlign:"right",fontFamily:"'IBM Plex Mono', monospace"}}>{pct}%</span>
+    </div>
+  );
+
+  const views = [
+    { id: "bands", label: "Band Power" },
+    { id: "channels", label: "By Channel" },
+    { id: "metrics", label: "Metrics" },
+    { id: "flags", label: `Flags (${analysis.flags.length})` },
+  ];
+
+  return (
+    <div ref={panelRef} style={{
+      position:"fixed", left:panelPos.x, top:panelPos.y, width:360, maxHeight:"75vh",
+      background:"#0c0c0c", border:"1px solid #2a2a2a", borderRadius:0,
+      display:"flex", flexDirection:"column", zIndex:80,
+      cursor: dragging ? "grabbing" : "default",
+      userSelect: dragging ? "none" : "auto",
+    }}>
+      {/* Header */}
+      <div onMouseDown={onMouseDown} style={{padding:"8px 12px",borderBottom:"1px solid #1a1a1a",cursor:"grab",
+        display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div>
+          <span style={{fontSize:10,fontWeight:700,color:"#666",letterSpacing:"0.1em"}}>qEEG ANALYSIS</span>
+          <span style={{fontSize:9,color:"#444",marginLeft:8}}>Epoch {Math.floor(epochStart / (waveformData[0]?.length / sampleRate || 10)) + 1}</span>
+        </div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#555",cursor:"pointer",padding:2}}>{I.X()}</button>
+      </div>
+
+      {/* View tabs */}
+      <div style={{display:"flex",borderBottom:"1px solid #1a1a1a"}}>
+        {views.map(v => (
+          <button key={v.id} onClick={()=>setActiveView(v.id)} style={{
+            flex:1,padding:"6px 4px",background:activeView===v.id?"#1a1a1a":"transparent",
+            border:"none",borderBottom:activeView===v.id?"2px solid #7ec8d9":"2px solid transparent",
+            color:activeView===v.id?"#ccc":"#555",fontSize:9,fontWeight:600,cursor:"pointer",
+          }}>{v.label}</button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{flex:1,overflow:"auto",padding:"10px 12px"}}>
+
+        {/* Band Power View */}
+        {activeView === "bands" && (<>
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:9,color:"#555",fontWeight:700,letterSpacing:"0.08em",marginBottom:8}}>GLOBAL AVERAGE BAND POWER</div>
+            {Object.entries(bandColors).map(([band, color]) => {
+              const val = analysis.avgBands[band];
+              const total = analysis.avgBands.total || 1;
+              const pct = ((val / total) * 100).toFixed(1);
+              return <PowerBar key={band} value={val} max={total * 0.6} color={color} label={band.charAt(0).toUpperCase() + band.slice(1, 3)} pct={pct}/>;
+            })}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
+            <div style={{background:"#0a0a0a",border:"1px solid #1a1a1a",padding:"8px 10px"}}>
+              <div style={{fontSize:8,color:"#555",letterSpacing:"0.08em"}}>PEAK ALPHA</div>
+              <div style={{fontSize:16,fontWeight:700,color:"#10B981",fontFamily:"'IBM Plex Mono', monospace"}}>{analysis.peakAlphaFreq.toFixed(1)} Hz</div>
+            </div>
+            <div style={{background:"#0a0a0a",border:"1px solid #1a1a1a",padding:"8px 10px"}}>
+              <div style={{fontSize:8,color:"#555",letterSpacing:"0.08em"}}>THETA/BETA</div>
+              <div style={{fontSize:16,fontWeight:700,color:analysis.thetaBetaRatio>3?"#F59E0B":"#7ec8d9",fontFamily:"'IBM Plex Mono', monospace"}}>{analysis.thetaBetaRatio.toFixed(2)}</div>
+            </div>
+            <div style={{background:"#0a0a0a",border:"1px solid #1a1a1a",padding:"8px 10px"}}>
+              <div style={{fontSize:8,color:"#555",letterSpacing:"0.08em"}}>ASYMMETRY (R-L)</div>
+              <div style={{fontSize:16,fontWeight:700,color:Math.abs(analysis.asymmetryIndex)>15?"#F59E0B":"#7ec8d9",fontFamily:"'IBM Plex Mono', monospace"}}>{analysis.asymmetryIndex>0?"+":""}{analysis.asymmetryIndex.toFixed(1)}%</div>
+            </div>
+            <div style={{background:"#0a0a0a",border:"1px solid #1a1a1a",padding:"8px 10px"}}>
+              <div style={{fontSize:8,color:"#555",letterSpacing:"0.08em"}}>CHANNELS</div>
+              <div style={{fontSize:16,fontWeight:700,color:"#888",fontFamily:"'IBM Plex Mono', monospace"}}>{channels.filter(c=>c!=="EKG").length}</div>
+            </div>
+          </div>
+        </>)}
+
+        {/* Per-Channel View */}
+        {activeView === "channels" && (
+          <div>
+            <div style={{fontSize:9,color:"#555",fontWeight:700,letterSpacing:"0.08em",marginBottom:8}}>BAND POWER BY CHANNEL</div>
+            {analysis.channelData.filter(c => c.channel !== "EKG").map(c => {
+              const total = c.bands.total || 1;
+              return (
+                <div key={c.channel} style={{marginBottom:8}}>
+                  <div style={{fontSize:10,color:"#aaa",fontFamily:"'IBM Plex Mono', monospace",marginBottom:3}}>{c.channel}</div>
+                  <div style={{display:"flex",height:8,background:"#0a0a0a",border:"1px solid #111"}}>
+                    {Object.entries(bandColors).map(([band, color]) => (
+                      <div key={band} title={`${band}: ${((c.bands[band]/total)*100).toFixed(1)}%`}
+                        style={{height:"100%",background:color,width:`${(c.bands[band]/total)*100}%`}}/>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              {Object.entries(bandColors).map(([band, color]) => (
+                <div key={band} style={{display:"flex",alignItems:"center",gap:3,fontSize:8,color:"#555"}}>
+                  <div style={{width:8,height:8,background:color}}/>{band}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Metrics View */}
+        {activeView === "metrics" && (
+          <div>
+            <div style={{fontSize:9,color:"#555",fontWeight:700,letterSpacing:"0.08em",marginBottom:10}}>QUANTITATIVE METRICS</div>
+
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:10,color:"#aaa",marginBottom:6}}>Band Power Distribution (Global)</div>
+              {Object.entries(bandLabels).map(([band, label]) => {
+                const total = analysis.avgBands.total || 1;
+                const pct = ((analysis.avgBands[band] / total) * 100).toFixed(1);
+                return (
+                  <div key={band} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"3px 0",borderBottom:"1px solid #111"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div style={{width:8,height:8,background:bandColors[band]}}/>
+                      <span style={{fontSize:10,color:"#888"}}>{label}</span>
+                    </div>
+                    <span style={{fontSize:11,fontWeight:700,color:bandColors[band],fontFamily:"'IBM Plex Mono', monospace"}}>{pct}%</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:10,color:"#aaa",marginBottom:6}}>Key Indices</div>
+              {[
+                { label: "Peak Alpha Frequency", value: `${analysis.peakAlphaFreq.toFixed(2)} Hz`, note: "Normal range: 9-11 Hz" },
+                { label: "Frontal Theta/Beta Ratio", value: analysis.thetaBetaRatio.toFixed(3), note: "Elevated >3.0 may indicate attentional variance" },
+                { label: "Alpha Asymmetry Index (R-L)", value: `${analysis.asymmetryIndex>0?"+":""}${analysis.asymmetryIndex.toFixed(2)}%`, note: "Values >15% indicate hemispheric difference" },
+                { label: "Dominant Frequency", value: `${analysis.peakAlphaFreq > 8 ? "Alpha" : analysis.peakAlphaFreq > 4 ? "Theta" : "Delta"} range`, note: `${analysis.peakAlphaFreq.toFixed(1)} Hz` },
+              ].map((m, i) => (
+                <div key={i} style={{padding:"6px 0",borderBottom:"1px solid #111"}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:10,color:"#888"}}>{m.label}</span>
+                    <span style={{fontSize:11,fontWeight:700,color:"#7ec8d9",fontFamily:"'IBM Plex Mono', monospace"}}>{m.value}</span>
+                  </div>
+                  <div style={{fontSize:8,color:"#444",marginTop:2}}>{m.note}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{fontSize:8,color:"#333",padding:"8px 0",borderTop:"1px solid #1a1a1a",lineHeight:1.5}}>
+              Quantitative values are computed from the current epoch. These are mathematical observations, not clinical interpretations. All metrics should be reviewed by a qualified professional.
+            </div>
+          </div>
+        )}
+
+        {/* Flags View */}
+        {activeView === "flags" && (
+          <div>
+            <div style={{fontSize:9,color:"#555",fontWeight:700,letterSpacing:"0.08em",marginBottom:10}}>EPOCH FLAGS</div>
+            {analysis.flags.length === 0 ? (
+              <div style={{padding:20,textAlign:"center",color:"#333",fontSize:11}}>No flags for this epoch</div>
+            ) : (
+              analysis.flags.map((f, i) => (
+                <div key={i} style={{
+                  display:"flex",alignItems:"center",gap:8,padding:"6px 8px",marginBottom:4,
+                  background:f.severity==="high"?"#1a0a0a":"#1a1a0a",
+                  border:`1px solid ${f.severity==="high"?"#991b1b30":"#854d0e30"}`,
+                }}>
+                  <span style={{fontSize:10,fontWeight:700,color:f.severity==="high"?"#f87171":"#facc15",fontFamily:"'IBM Plex Mono', monospace",width:60}}>{f.channel}</span>
+                  <span style={{fontSize:10,color:"#aaa",flex:1}}>{f.type}</span>
+                  <span style={{fontSize:10,fontWeight:700,color:f.severity==="high"?"#f87171":"#facc15",fontFamily:"'IBM Plex Mono', monospace"}}>{f.value}</span>
+                </div>
+              ))
+            )}
+            {analysis.flags.length > 0 && (
+              <div style={{fontSize:8,color:"#444",marginTop:10,lineHeight:1.5}}>
+                Flags indicate channels where band power exceeds threshold values for the current epoch. Elevated delta ({">"}60%) or theta ({">"}40%) relative power may warrant further review.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={{padding:"6px 12px",borderTop:"1px solid #1a1a1a",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontSize:8,color:"#333"}}>qEEG v0.1 - Observational metrics only</span>
+        <button onClick={()=>{
+          const report = {
+            timestamp: new Date().toISOString(),
+            epochStart,
+            sampleRate,
+            channels: channels.length,
+            bandPower: analysis.avgBands,
+            peakAlphaFrequency: analysis.peakAlphaFreq,
+            thetaBetaRatio: analysis.thetaBetaRatio,
+            asymmetryIndex: analysis.asymmetryIndex,
+            flags: analysis.flags,
+            perChannel: analysis.channelData.map(c => ({ channel: c.channel, ...c.bands })),
+          };
+          const blob = new Blob([JSON.stringify(report, null, 2)], {type:"application/json"});
+          const url = URL.createObjectURL(blob); const a = document.createElement("a");
+          a.href = url; a.download = `qEEG-report-epoch${Math.floor(epochStart/epochSec)+1}.json`; a.click(); URL.revokeObjectURL(url);
+        }} style={{padding:"3px 8px",background:"#111",border:"1px solid #222",color:"#666",cursor:"pointer",fontSize:9,fontWeight:600}}>
+          {I.Save(12)} Export
+        </button>
+      </div>
     </div>
   );
 }
@@ -1542,6 +1895,8 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
   const [showPatternTable, setShowPatternTable] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [annotationPanelPos, setAnnotationPanelPos] = useState({ x: null, y: null });
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [analysisPanelPos, setAnalysisPanelPos] = useState({ x: null, y: null });
   const annotations = annotationsMap[filename] || [];
   const setAnnotations = (newAnns) => {
     const resolved = typeof newAnns === "function" ? newAnns(annotations) : newAnns;
@@ -1630,6 +1985,9 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
           <button onClick={(e)=>{e.stopPropagation();setShowPatternTable(true);}} style={controlBtn(showPatternTable)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.List()} Pattern Table</span>
           </button>
+          <button onClick={(e)=>{e.stopPropagation();setShowAnalysis(prev => !prev);}} style={controlBtn(showAnalysis)}>
+            <span style={{display:"flex",alignItems:"center",gap:4}}>{I.BarChart()} qEEG</span>
+          </button>
           <button onClick={(e)=>{e.stopPropagation();setShowAnnotations(prev => !prev);}} style={controlBtn(showAnnotations)}>
             <span style={{display:"flex",alignItems:"center",gap:4}}>{I.Bookmark()} Annotations ({annotations.length})</span>
           </button>
@@ -1661,6 +2019,14 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord, annota
           setCurrentEpoch={eeg.setCurrentEpoch} filename={filename}
           onClose={()=>setShowAnnotations(false)}
           panelPos={annotationPanelPos} setPanelPos={setAnnotationPanelPos}/>
+      )}
+
+      {/* Floating qEEG analysis panel */}
+      {showAnalysis && (
+        <QuantAnalysisPanel waveformData={eeg.waveformData} channels={eeg.channels}
+          sampleRate={eeg.sampleRate} epochSec={eeg.epochSec} epochStart={eeg.epochStart}
+          onClose={()=>setShowAnalysis(false)}
+          panelPos={analysisPanelPos} setPanelPos={setAnalysisPanelPos}/>
       )}
 
       {/* Channel context menu */}
