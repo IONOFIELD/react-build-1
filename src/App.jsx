@@ -1382,6 +1382,7 @@ function IngestForm({ onClose, onIngest }) {
     const file = e.target.files[0];
     if (!file) return;
     setSelectedFile(file);
+    setForm(prev => ({...prev, sampleRate: 256}));
 
     // Extract info from filename and file size
     const name = file.name;
