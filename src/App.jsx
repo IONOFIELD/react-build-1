@@ -1465,7 +1465,7 @@ function ReviewTab({ record, updateRecordStatus, records, onSelectRecord }) {
             text={eeg.annotationText} setText={eeg.setAnnotationText} onConfirm={eeg.confirmAnnotation}
             onCancel={()=>{eeg.setAnnotationDraft(null);eeg.setIsAddingAnnotation(false);}} containerRef={eeg.containerRef}/>
         </WaveformCanvas>
-        {eeg.showAnnotations && (
+        {showAnnotations && (
           <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
             isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
             selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
@@ -2243,7 +2243,7 @@ function AcquireTab() {
           )}
         </WaveformCanvas>
 
-        {eeg.showAnnotations && (
+        {showAnnotations && (
           <AnnotationPanel annotations={eeg.annotations} setAnnotations={eeg.setAnnotations}
             isAddingAnnotation={eeg.isAddingAnnotation} setIsAddingAnnotation={eeg.setIsAddingAnnotation}
             selectedAnnotationType={eeg.selectedAnnotationType} setSelectedAnnotationType={eeg.setSelectedAnnotationType}
